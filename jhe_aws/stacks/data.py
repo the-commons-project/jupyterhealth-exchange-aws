@@ -201,17 +201,27 @@ class DataStack(cdk.Stack):
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             enforce_ssl=True,
             versioned=True,
-            lifecycle_rules=(
-                [
-                    s3.LifecycleRule(
-                        noncurrent_version_expiration=cdk.Duration.days(
-                            self.cfg.data.bundle_noncurrent_version_days
+            lifecycle_rules=[
+                # JHE uploads each pull as a multipart upload and aborts its own failures; this rule is
+                # the backstop for a task that dies mid-upload, whose parts would otherwise stay (and be
+                # billed) invisibly. Unconditional: it does not depend on version expiry being on.
+                s3.LifecycleRule(
+                    id="abort-incomplete-multipart-uploads",
+                    abort_incomplete_multipart_upload_after=cdk.Duration.days(1),
+                ),
+                *(
+                    [
+                        s3.LifecycleRule(
+                            id="expire-noncurrent-versions",
+                            noncurrent_version_expiration=cdk.Duration.days(
+                                self.cfg.data.bundle_noncurrent_version_days
+                            ),
                         )
-                    )
-                ]
-                if self.cfg.data.bundle_noncurrent_version_days
-                else None
-            ),
+                    ]
+                    if self.cfg.data.bundle_noncurrent_version_days
+                    else []
+                ),
+            ],
             object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             removal_policy=cdk.RemovalPolicy.RETAIN,
         )

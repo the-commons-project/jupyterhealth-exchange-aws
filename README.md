@@ -132,7 +132,7 @@ not a requirement of JHE.
 | a scheduler for the sweep and the Open Wearables poll | JHE's own: one always-on Fargate task running `supercronic` on the image's crontab, with the web service's roles and its own spool disk. A roll stops the old task before starting the new one, so no job runs twice | `compute.cron` |
 | migrate, bootstrap and one-off commands before a release | a separate ops task, run by `jhe-deploy` | `ops` |
 | Postgres with TLS | a single RDS Postgres 16 instance with `rds.force_ssl`; the client verifies the server with the RDS CA bundle built into the image | `data`, `data.verify_server_certificate` |
-| an S3-compatible bucket for bundles | an S3 bucket, encrypted with the KMS key, reached with the task role and no access keys. It is versioned, and old versions expire after 90 days | `data.bundle_noncurrent_version_days` |
+| an S3-compatible bucket for bundles | an S3 bucket, encrypted with the KMS key, reached with the task role and no access keys. It is versioned, old versions expire after 90 days, and incomplete multipart uploads are aborted after a day | `data.bundle_noncurrent_version_days` |
 | writable local disk for the spool | 50 GiB of ephemeral storage per web task, and a 120-second stop timeout so a pull in flight has the longest grace Fargate allows | `compute.web.ephemeral_storage_gib` |
 | outbound HTTPS to any EHR | a NAT gateway or a NAT instance. Calls to Secrets Manager, ECR and CloudWatch also leave through it; only S3 has an endpoint | `network.nat` |
 | two public hostnames with a certificate | an ACM certificate and Route 53 records. The ALB answers only those two hostnames and returns 404 to any other | `compute.dns` |

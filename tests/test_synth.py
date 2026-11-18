@@ -467,14 +467,18 @@ def test_bundle_bucket_expires_old_versions(default):
     )
     assert bucket["VersioningConfiguration"] == {"Status": "Enabled"}
     rules = bucket["LifecycleConfiguration"]["Rules"]
-    assert rules[0]["NoncurrentVersionExpiration"] == {"NoncurrentDays": 90}
+    assert any(r.get("NoncurrentVersionExpiration") == {"NoncurrentDays": 90} for r in rules)
+    assert any(r.get("AbortIncompleteMultipartUpload") == {"DaysAfterInitiation": 1} for r in rules)
     _, forever = synth(sample_config(data={"bundle_noncurrent_version_days": None}))
     kept = next(
         v["Properties"]
         for k, v in assertions.Template.from_stack(forever.data).find_resources("AWS::S3::Bucket").items()
         if k.startswith("BundleBucket")
     )
-    assert "LifecycleConfiguration" not in kept
+    # no version expiry, but the incomplete-upload cleanup stays
+    kept_rules = kept["LifecycleConfiguration"]["Rules"]
+    assert not any("NoncurrentVersionExpiration" in r for r in kept_rules)
+    assert any(r.get("AbortIncompleteMultipartUpload") == {"DaysAfterInitiation": 1} for r in kept_rules)
 
 
 def test_operator_secrets_are_not_stack_resources(default):
