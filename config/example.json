@@ -85,5 +85,6 @@
   "access": {
     "deployer_users": [],
     "deployer_roles": []
-  }
+  },
+  "redcap_integration": null
 }

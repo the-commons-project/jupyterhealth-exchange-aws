@@ -7,14 +7,15 @@
                           -> compute (and monitoring); a failed migration stops before compute
     run -- <command>      a one-off management command as the ops task, its log and exit code
     secrets init|set|show|restore-previous
-                          the service and mcp secrets, without a value ever crossing the terminal
-                          unless you type it
+                          the service and mcp secrets (and redcap, when configured), without a value
+                          ever crossing the terminal unless you type it
     admin create          the first admin, password in a secret, never in a shell or CloudTrail
     admin forget          replace that secret's value once the password is changed (never delete it)
     restart               fresh web and mcp tasks, same image: after a secret or an admin change
                           the running processes cached
     down / up             take the replaceable stacks down and stop the database; bring them back
-    logs web|ops|mcp      the task log, --since 30m, --filter 'pattern'
+    logs web|ops|mcp|redcap
+                          the task log, --since 30m, --filter 'pattern'
     status                what is deployed
 
 Every subcommand takes --config, the environment's configuration file; the environment's name
@@ -65,8 +66,15 @@ SECRET_FIELDS = {
         "OW_S3_SECRET_KEY",
     ),
     "mcp": ("JHE_CLIENT_ID", "JHE_CLIENT_SECRET", "MCP_BROKER_KEY"),
+    # Only for a deployment with `redcap_integration` set (see secret_names).
+    "redcap": ("JHE_API_KEY", "REDCAP_API_TOKEN", "TRIGGER_TOKEN"),
 }
-GENERATED_FIELDS = {"service": REQUIRED_SERVICE_FIELDS, "mcp": ("MCP_BROKER_KEY",)}
+GENERATED_FIELDS = {
+    "service": REQUIRED_SERVICE_FIELDS,
+    "mcp": ("MCP_BROKER_KEY",),
+    "redcap": ("TRIGGER_TOKEN",),
+}
+REQUIRED_REDCAP_FIELDS = ("JHE_API_KEY", "REDCAP_API_TOKEN", "TRIGGER_TOKEN")
 IMAGES_PARAMETER = "/jhe/{env}/images"
 
 
@@ -123,7 +131,12 @@ def cdk(
 
 
 def stack_names(cfg: EnvironmentConfig, parts: Sequence[str]) -> list[str]:
-    parts = [p for p in parts if not (p == "monitoring" and not cfg.monitoring.enabled)]
+    parts = [
+        p
+        for p in parts
+        if not (p == "monitoring" and not cfg.monitoring.enabled)
+        and not (p == "redcap" and not cfg.redcap_enabled)
+    ]
     return [cfg.stack_name(p) for p in parts]
 
 
@@ -203,7 +216,7 @@ def describe_images(aws: Aws, cfg: EnvironmentConfig, images: Images) -> list[st
 def generate_service_value(field: str) -> str:
     if field == "SECRET_KEY":
         return pysecrets.token_urlsafe(48)
-    if field == "MCP_BROKER_KEY":
+    if field in ("MCP_BROKER_KEY", "TRIGGER_TOKEN"):
         return pysecrets.token_urlsafe(36)
     if field == "PATIENT_ACCESS_ENCRYPTION_KEYS":
         return base64.urlsafe_b64encode(os.urandom(32)).decode()  # one Fernet key; rotate by prepending
@@ -230,6 +243,11 @@ GENERATED = (
 )
 
 
+def secret_names(cfg: EnvironmentConfig) -> tuple[str, ...]:
+    """The secrets this deployment has: the redcap one only when `redcap_integration` is set."""
+    return tuple(w for w in SECRET_FIELDS if w != "redcap" or cfg.redcap_enabled)
+
+
 def secret_json(aws: Aws, cfg: EnvironmentConfig, which: str) -> dict[str, str]:
     name = f"jhe/{cfg.name}/{which}"
     if not aws.secret_exists(name):
@@ -242,7 +260,8 @@ def secrets_init(aws: Aws, cfg: EnvironmentConfig) -> None:
     fill every generatable field that is still empty. Never overwrites a value."""
     kms_key = f"alias/jhe-{cfg.name}-data" if cfg.data.customer_managed_keys else None
     tags = {"jhe:environment": cfg.name, "jhe:managed-by": "jhe-deploy"}
-    for which, fields in SECRET_FIELDS.items():
+    for which in secret_names(cfg):
+        fields = SECRET_FIELDS[which]
         name = f"jhe/{cfg.name}/{which}"
         if not aws.secret_exists(name):
             aws.create_secret_json(name, {f: "" for f in fields}, kms_key, tags)
@@ -275,7 +294,7 @@ def secrets_set(aws: Aws, cfg: EnvironmentConfig, which: str, pairs: Sequence[st
 
 
 def secrets_show(aws: Aws, cfg: EnvironmentConfig) -> None:
-    for which in ("service", "mcp"):
+    for which in secret_names(cfg):
         name = f"jhe/{cfg.name}/{which}"
         current = secret_json(aws, cfg, which)
         print(name)
@@ -419,6 +438,17 @@ def cmd_deploy(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, confi
             "JHE_CLIENT_SECRET=...`, and deploy again."
         )
 
+    if cfg.redcap_enabled:
+        redcap_name = f"jhe/{cfg.name}/redcap"
+        if not aws.secret_exists(redcap_name):
+            raise Fail(f"{redcap_name} does not exist yet: run `jhe-deploy secrets init`")
+        redcap_missing = [f for f in REQUIRED_REDCAP_FIELDS if not secret_json(aws, cfg, "redcap").get(f)]
+        if redcap_missing:
+            say(
+                f"REDCap deploys, but {redcap_name} has empty {', '.join(redcap_missing)}, so the trigger "
+                f"answers 503 until `jhe-deploy secrets set --secret redcap ...` fills them."
+            )
+
     say(f"4/5 ops stack and migrate: {cfg.stack_name('ops')}")
     cdk(
         "deploy",
@@ -442,10 +472,10 @@ def cmd_deploy(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, confi
         if code != 0:
             raise Fail(f"bootstrap exited {code}; the compute stack was not touched")
 
-    say(f"5/5 compute: {', '.join(stack_names(cfg, ('compute', 'monitoring')))}")
+    say(f"5/5 compute: {', '.join(stack_names(cfg, ('compute', 'monitoring', 'redcap')))}")
     cdk(
         "deploy",
-        stack_names(cfg, ("compute", "monitoring")),
+        stack_names(cfg, ("compute", "monitoring", "redcap")),
         cfg,
         config_path,
         images=images,
@@ -458,6 +488,9 @@ def cmd_deploy(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, confi
         f"deployed: {outputs.get('WebUrl', '?')}"
         + (f" and {outputs['McpUrl']}" if "McpUrl" in outputs else "")
     )
+    if cfg.redcap_enabled:
+        redcap_outputs = aws.stack_outputs(cfg.stack_name("redcap"))
+        say(f"REDCap trigger: {redcap_outputs.get('RedcapTriggerUrl', '?')}?token=<TRIGGER_TOKEN>")
     for line in describe_images(aws, cfg, images):
         say(line)
     return 0
@@ -540,7 +573,7 @@ def cmd_down(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, config_
     remember_images(aws, cfg, images)
     cdk(
         "destroy",
-        stack_names(cfg, ("monitoring", "compute")),
+        stack_names(cfg, ("redcap", "monitoring", "compute")),
         cfg,
         config_path,
         images=images,
@@ -612,6 +645,8 @@ def cmd_logs(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, config_
 
 def cmd_status(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, config_path: Path) -> int:
     for part in (ACCESS, *FOUNDATION, *REPLACEABLE):
+        if part == "redcap" and not cfg.redcap_enabled:
+            continue
         name = cfg.stack_name(part)
         print(f"{name:<32} {aws.stack_status(name) or 'not deployed'}")
     identifier = f"jhe-{cfg.name}-db"
@@ -675,10 +710,13 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("command", nargs=argparse.REMAINDER)
     r.set_defaults(fn=cmd_run)
 
-    s = sub.add_parser("secrets", help="fill or inspect the service and mcp secrets")
+    s = sub.add_parser("secrets", help="fill or inspect the service, mcp (and redcap) secrets")
     s.add_argument("action", choices=("init", "set", "show", "restore-previous"))
     s.add_argument(
-        "--secret", choices=("service", "mcp"), default="service", help="for set, restore-previous"
+        "--secret",
+        choices=("service", "mcp", "redcap"),
+        default="service",
+        help="for set, restore-previous (redcap only with redcap_integration set)",
     )
     s.add_argument("pairs", nargs="*", help="KEY=VALUE for set")
     s.set_defaults(fn=cmd_secrets)
@@ -696,7 +734,7 @@ def parser() -> argparse.ArgumentParser:
         fn=cmd_restart
     )
     lg = sub.add_parser("logs", help="a task log group, oldest first")
-    lg.add_argument("group", choices=("web", "cron", "ops", "mcp"))
+    lg.add_argument("group", choices=("web", "cron", "ops", "mcp", "redcap"))
     lg.add_argument("--since", default="30m", help="how far back: 30m, 2h, 1d (default 30m)")
     lg.add_argument("--filter", help="a CloudWatch Logs filter pattern, e.g. 'job' or '?error ?Traceback'")
     lg.set_defaults(fn=cmd_logs)

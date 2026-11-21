@@ -5,6 +5,8 @@
        └──> data ──┴──> ops (the operator's task) ──> compute (ALB, web, mcp, cron)
                                                                    │
                                                                    └──> monitoring
+    redcap (a Lambda for REDCap's data entry trigger; only when `redcap_integration` is set;
+            needs only the data stack's key)
     access (the deployer policy; depends on nothing, deployed by `jhe-deploy access` only)
 
 Network, shared and data hold everything stateful or slow to replace and carry termination
@@ -27,10 +29,11 @@ from .data import DataStack
 from .monitoring import MonitoringStack
 from .network import NetworkStack
 from .ops import OpsStack
+from .redcap import RedcapStack
 from .shared import SharedStack
 
 FOUNDATION = ("network", "shared", "data")
-REPLACEABLE = ("ops", "compute", "monitoring")
+REPLACEABLE = ("ops", "compute", "monitoring", "redcap")
 ACCESS = "access"
 
 
@@ -43,6 +46,7 @@ class Stacks:
     ops: OpsStack
     compute: ComputeStack
     monitoring: MonitoringStack | None
+    redcap: RedcapStack | None = None
 
 
 def build_stacks(app: cdk.App, cfg: EnvironmentConfig, images: Images) -> Stacks:
@@ -88,4 +92,9 @@ def build_stacks(app: cdk.App, cfg: EnvironmentConfig, images: Images) -> Stacks
         if cfg.monitoring.enabled
         else None
     )
-    return Stacks(access, network, shared, data, ops, compute, monitoring)
+    redcap = (
+        RedcapStack(app, cfg.stack_name("redcap"), cfg, data, **props("redcap", False))
+        if cfg.redcap_enabled
+        else None
+    )
+    return Stacks(access, network, shared, data, ops, compute, monitoring, redcap)

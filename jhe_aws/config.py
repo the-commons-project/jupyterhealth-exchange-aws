@@ -271,6 +271,29 @@ class MonitoringConfig(Strict):
     target_5xx_threshold: int = Field(default=10, ge=1)  # per five minutes
 
 
+class RedcapIntegration(Strict):
+    """A REDCap Data Entry Trigger that creates a JHE patient and writes their invitation link
+    back to the record. Present: a Lambda behind a function URL, its log group and the
+    `jhe/<env>/redcap` secret are deployed. `null` (the default): none of it exists. See
+    docs/redcap-integration.md."""
+
+    redcap_api_url: str  # the project's API endpoint, e.g. https://redcap.example.org/api/
+    email_field: str  # the REDCap field holding the patient's e-mail
+    link_field: str  # the REDCap field the invitation link is written to
+    record_id_field: str = "record_id"  # the project's first field (its record id)
+    organization_id: int = Field(ge=1)  # the JHE organization new patients join
+    jhe_client_name: str = "USCDI Patient Access"  # the JHE client the invitation is for
+    memory_mb: int = Field(default=256, ge=128, le=1024)
+    timeout_seconds: int = Field(default=900, ge=5, le=900)  # 900 is Lambda's maximum (15 minutes)
+
+    @field_validator("redcap_api_url")
+    @classmethod
+    def _https(cls, value: str) -> str:
+        if not value.startswith("https://"):
+            raise ValueError("redcap_integration.redcap_api_url must be an https:// URL")
+        return value
+
+
 # --- the environment ----------------------------------------------------------------------------
 
 
@@ -287,6 +310,11 @@ class EnvironmentConfig(Strict):
     compute: ComputeConfig
     monitoring: MonitoringConfig = MonitoringConfig()
     access: AccessConfig = AccessConfig()
+    redcap_integration: RedcapIntegration | None = None  # None: no REDCap resources are deployed
+
+    @property
+    def redcap_enabled(self) -> bool:
+        return self.redcap_integration is not None
 
     @property
     def mcp_enabled(self) -> bool:

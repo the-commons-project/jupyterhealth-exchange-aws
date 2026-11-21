@@ -116,8 +116,9 @@ configuration, task definitions, images or files:
 | `jhe/<env>/bootstrap-admin` | the `data` stack | the first admin's password |
 | `jhe/<env>/service` | `jhe-deploy secrets init` | `SECRET_KEY`, the OIDC key, the patient-access keys, SMTP and Open Wearables credentials |
 | `jhe/<env>/mcp` | `jhe-deploy secrets init` | the MCP server's OAuth client and broker key |
+| `jhe/<env>/redcap` | `jhe-deploy secrets init`, only with `redcap_integration` set | the REDCap trigger's JHE key, REDCap API token and trigger token ([docs/redcap-integration.md](docs/redcap-integration.md)) |
 
-The last two are created by the script and only referenced by name from the stacks, so no
+The `service`, `mcp` and `redcap` secrets are created by the script and only referenced by name from the stacks, so no
 stack change can touch their values ([Secrets](#secrets) says why).
 
 ### What this build chose
